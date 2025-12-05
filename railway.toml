@@ -1,8 +1,15 @@
 [build]
 builder = "nixpacks"
-buildCommand = "./mvnw -DskipTests package"
 
-[deploy]
-startCommand = "java -jar target/solo-music-academy-0.0.1-SNAPSHOT.jar"
-restartPolicyType = "on_failure"
-healthcheckPath = "/health"
+[build.nixpacks]
+plan = "java"
+
+[build.nixpacks.env]
+JAVA_VERSION = "17"
+
+[build.nixpacks.phases.build]
+
+cmd = "mvn -DskipTests package"
+
+[build.nixpacks.phases.start]
+cmd = "java -jar target/solo-music-academy-0.0.1-SNAPSHOT.jar"
