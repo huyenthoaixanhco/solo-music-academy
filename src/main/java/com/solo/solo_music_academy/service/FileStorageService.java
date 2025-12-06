@@ -9,6 +9,7 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
+import jakarta.annotation.PostConstruct;
 import java.io.IOException;
 import java.time.LocalDate;
 import java.util.Base64;
@@ -20,7 +21,7 @@ public class FileStorageService {
 
     private static final Logger log = LoggerFactory.getLogger(FileStorageService.class);
 
-    @Value("${app.github.token}")
+    @Value("${app.github.token:}")
     private String githubToken;
 
     @Value("${app.github.owner}")
@@ -34,12 +35,21 @@ public class FileStorageService {
 
     private final RestTemplate restTemplate = new RestTemplate();
 
+    @PostConstruct
+    public void logConfig() {
+        // Không log token để tránh lộ secret
+        log.info("[GitHub Storage] owner={}, repo={}, branch={}", owner, repo, branch);
+    }
+
     // ========= UPLOAD =========
     public String saveAttendanceImage(MultipartFile file, Long slotId, LocalDate date) throws IOException {
         String originalName = file.getOriginalFilename();
         String ext = "";
         if (originalName != null && originalName.lastIndexOf('.') != -1) {
             ext = originalName.substring(originalName.lastIndexOf('.'));
+        }
+        if (ext.isBlank()) {
+            ext = ".jpg"; // fallback
         }
 
         String path = "attendance/slot_" + slotId + "_" + date + ext;
@@ -48,8 +58,40 @@ public class FileStorageService {
 
     @SuppressWarnings("unchecked")
     private String uploadToGitHub(MultipartFile file, String path) throws IOException {
+        if (githubToken == null || githubToken.isBlank()) {
+            log.error("GitHub token is missing. Please set APP_GITHUB_TOKEN env.");
+            throw new IllegalStateException("GitHub token is missing (APP_GITHUB_TOKEN)");
+        }
+
         String url = "https://api.github.com/repos/" + owner + "/" + repo + "/contents/" + path;
 
+        // 1) Thử GET trước để xem file đã tồn tại chưa (để lấy sha nếu có)
+        String existingSha = null;
+        try {
+            String getUrl = url + "?ref=" + branch;
+
+            HttpHeaders getHeaders = new HttpHeaders();
+            getHeaders.setBearerAuth(githubToken);
+
+            HttpEntity<Void> getEntity = new HttpEntity<>(getHeaders);
+            ResponseEntity<Map> getResp = restTemplate.exchange(
+                    getUrl,
+                    HttpMethod.GET,
+                    getEntity,
+                    Map.class
+            );
+
+            if (getResp.getStatusCode().is2xxSuccessful() && getResp.getBody() != null) {
+                Map<String, Object> body = getResp.getBody();
+                existingSha = (String) body.get("sha");
+                log.info("GitHub file {} exists, will update with sha={}", path, existingSha);
+            }
+        } catch (HttpClientErrorException.NotFound e) {
+            // File chưa tồn tại -> tạo mới
+            log.info("GitHub file {} not found, will create new", path);
+        }
+
+        // 2) PUT để tạo mới hoặc update (nếu có sha)
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(githubToken);
@@ -58,23 +100,35 @@ public class FileStorageService {
         body.put("message", "Upload attendance image " + path);
         body.put("content", Base64.getEncoder().encodeToString(file.getBytes()));
         body.put("branch", branch);
+        if (existingSha != null && !existingSha.isBlank()) {
+            body.put("sha", existingSha); // bắt buộc khi update file đã tồn tại
+        }
 
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
-        ResponseEntity<Map> resp = restTemplate.exchange(
-                url,
-                HttpMethod.PUT,
-                entity,
-                Map.class
-        );
+        ResponseEntity<Map> resp;
+        try {
+            resp = restTemplate.exchange(
+                    url,
+                    HttpMethod.PUT,
+                    entity,
+                    Map.class
+            );
+        } catch (HttpClientErrorException e) {
+            log.error("GitHub upload error for {}: status={} body={}",
+                    path, e.getStatusCode(), e.getResponseBodyAsString());
+            throw e;
+        }
 
         if (!resp.getStatusCode().is2xxSuccessful() || resp.getBody() == null) {
+            log.error("Upload to GitHub failed for {}: {}", path, resp.getStatusCode());
             throw new IllegalStateException("Upload to GitHub failed: " + resp.getStatusCode());
         }
 
         Map<String, Object> respBody = resp.getBody();
         Map<String, Object> content = (Map<String, Object>) respBody.get("content");
         if (content == null) {
+            log.error("GitHub response has no 'content' field for {}", path);
             throw new IllegalStateException("GitHub response has no 'content' field");
         }
 
@@ -102,7 +156,8 @@ public class FileStorageService {
             return;
         }
 
-        String after = imageUrl.substring(idx + marker.length()); // ví dụ: main/attendance/slot_1_2025-12-03.jpg
+        // ví dụ: https://raw.githubusercontent.com/owner/repo/main/attendance/slot_1_2025-12-03.jpg
+        String after = imageUrl.substring(idx + marker.length()); // main/attendance/slot_1_...
         int slash = after.indexOf('/');
         if (slash == -1) {
             log.warn("Cannot extract branch/path from imageUrl: {}", imageUrl);
@@ -121,6 +176,11 @@ public class FileStorageService {
 
     @SuppressWarnings("unchecked")
     private void deleteFromGitHub(String path, String branchName) throws IOException {
+        if (githubToken == null || githubToken.isBlank()) {
+            log.error("GitHub token is missing. Cannot delete file {}.", path);
+            throw new IllegalStateException("GitHub token is missing (APP_GITHUB_TOKEN)");
+        }
+
         // 1) Lấy sha của file
         String getUrl = "https://api.github.com/repos/" + owner + "/" + repo
                 + "/contents/" + path + "?ref=" + branchName;
@@ -173,5 +233,7 @@ public class FileStorageService {
         if (!deleteResp.getStatusCode().is2xxSuccessful()) {
             throw new IllegalStateException("Delete from GitHub failed: " + deleteResp.getStatusCode());
         }
+
+        log.info("Deleted GitHub file {} on branch {}", path, branchName);
     }
 }
