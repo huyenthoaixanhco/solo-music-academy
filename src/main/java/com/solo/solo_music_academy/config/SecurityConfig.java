@@ -28,8 +28,9 @@ public class SecurityConfig {
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
-            // Dùng CORS config bên dưới
+            // CORS
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+            // REST + JWT nên tắt CSRF
             .csrf(csrf -> csrf.disable())
             .sessionManagement(sess ->
                     sess.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
@@ -48,26 +49,27 @@ public class SecurityConfig {
                 ).permitAll()
 
                 // ===== ADMIN ATTENDANCE (ĐIỂM DANH & DẠY BÙ) =====
+                // Dùng hasAnyRole -> Spring tự thêm tiền tố ROLE_
                 .requestMatchers("/admin/attendance/**")
-                    .hasAnyAuthority("ROLE_SUPER_ADMIN", "ROLE_ADMIN", "ROLE_TEACHER")
+                    .hasAnyRole("SUPER_ADMIN", "ADMIN", "TEACHER")
 
                 // ===== GÓI HỌC / LEADS =====
                 .requestMatchers("/admin/packages/**")
-                    .hasAnyAuthority("ROLE_SUPER_ADMIN", "ROLE_SUPPORT")
+                    .hasAnyRole("SUPER_ADMIN", "SUPPORT")
                 .requestMatchers("/admin/leads/**")
-                    .hasAnyAuthority("ROLE_SUPER_ADMIN")
+                    .hasRole("SUPER_ADMIN")
 
                 // ===== CÁC ADMIN KHÁC =====
                 .requestMatchers("/admin/**")
-                    .hasAuthority("ROLE_SUPER_ADMIN")
+                    .hasRole("SUPER_ADMIN")
 
                 // ===== SUPPORT =====
                 .requestMatchers("/support/**")
-                    .hasAnyAuthority("ROLE_SUPPORT", "ROLE_SUPER_ADMIN")
+                    .hasAnyRole("SUPPORT", "SUPER_ADMIN")
 
                 // ===== STUDENT =====
                 .requestMatchers("/student/**")
-                    .hasAuthority("ROLE_STUDENT")
+                    .hasRole("STUDENT")
 
                 // ===== PROFILE & CÁC API CÒN LẠI =====
                 .requestMatchers("/profile/**").authenticated()
